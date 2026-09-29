@@ -15,6 +15,7 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
+
 subprojects {
     project.evaluationDependsOn(":app")
 }
@@ -23,10 +24,10 @@ tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
 
-allprojects {
-    plugins.withId("com.android.library") {
-        extensions.configure<com.android.build.gradle.BaseExtension> {
-            compileSdkVersion(36)
+gradle.projectsEvaluated {
+    project.allprojects {
+        it.pluginManager.withPlugin("com.android.library") {
+            (it.extensions.getByName("android") as com.android.build.gradle.LibraryExtension).compileSdk = 36
         }
     }
 }
