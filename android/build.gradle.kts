@@ -23,12 +23,10 @@ tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
 
-subprojects {
-    afterEvaluate {
-        if (plugins.hasPlugin("com.android.library")) {
-            extensions.configure<com.android.build.gradle.BaseExtension> {
-                compileSdkVersion(36)
-            }
+allprojects {
+    plugins.withId("com.android.library") {
+        extensions.configure<com.android.build.gradle.BaseExtension> {
+            compileSdkVersion(36)
         }
     }
 }
