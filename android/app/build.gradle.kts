@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.white_room_app"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     
 
     compileOptions {
