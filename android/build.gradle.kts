@@ -25,9 +25,11 @@ tasks.register<Delete>("clean") {
 }
 
 gradle.projectsEvaluated {
-    project.allprojects {
-        it.pluginManager.withPlugin("com.android.library") {
-            (it.extensions.getByName("android") as com.android.build.gradle.LibraryExtension).compileSdk = 36
+    rootProject.allprojects {
+        plugins.withId("com.android.library") {
+            extensions.configure<com.android.build.api.dsl.LibraryExtension>("android") {
+                compileSdk = 36
+            }
         }
     }
 }
