@@ -13,7 +13,7 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
-    project.layout.buildDirectory.value(newSubprojectBuildDir)
+    project.layout.buildBuildDir.value(newSubprojectBuildDir)
 }
 
 subprojects {
@@ -22,14 +22,4 @@ subprojects {
 
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
-}
-
-gradle.projectsEvaluated {
-    rootProject.allprojects {
-        plugins.withId("com.android.library") {
-            extensions.configure<com.android.build.api.dsl.LibraryExtension>("android") {
-                compileSdk = 36
-            }
-        }
-    }
 }
