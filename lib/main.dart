@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 void main() {
   AwesomeNotifications().initialize(null, [
@@ -14,7 +18,7 @@ void main() {
       channelKey: 'ghost_alarm',
       channelName: 'Alarmas Ghost',
       channelDescription: 'Recordatorios que cubren la pantalla',
-      defaultColor: const Color(0xFF00D4FF),
+      defaultColor: const Color(0xFFFF6D00),
       importance: NotificationImportance.Max,
       playSound: true,
       criticalAlerts: true,
@@ -79,6 +83,7 @@ class Recordatorio {
   final String anim;
   final bool activo;
   final String? sonido;
+  final String categoria;
 
   Recordatorio({
     required this.id,
@@ -89,6 +94,7 @@ class Recordatorio {
     required this.anim,
     this.activo = true,
     this.sonido,
+    this.categoria = 'recordatorio',
   });
 
   Map<String, dynamic> toJson() => {
@@ -100,6 +106,7 @@ class Recordatorio {
     'anim': anim,
     'activo': activo,
     'sonido': sonido,
+    'categoria': categoria,
   };
 
   factory Recordatorio.fromJson(Map<String, dynamic> j) => Recordatorio(
@@ -111,36 +118,8 @@ class Recordatorio {
     anim: (j['anim'] ?? 'water') as String,
     activo: j['activo'] != false,
     sonido: j['sonido'] as String?,
+    categoria: (j['categoria'] ?? 'recordatorio') as String,
   );
-}
-
-class _WavePainter extends CustomPainter {
-  final double t;
-  final Color color;
-  final double level;
-  final double amp;
-  _WavePainter({
-    required this.t,
-    required this.color,
-    required this.level,
-    required this.amp,
-  });
-  @override
-  void paint(Canvas canvas, Size size) {
-    final p = Paint()..color = color;
-    final path = Path();
-    final baseY = size.height * level;
-    path.moveTo(0, size.height);
-    for (var x = 0.0; x <= size.width; x += 6) {
-      path.lineTo(x, baseY + sin((x / size.width) * 2 * pi + t * 2 * pi) * amp);
-    }
-    path.lineTo(size.width, size.height);
-    path.close();
-    canvas.drawPath(path, p);
-  }
-
-  @override
-  bool shouldRepaint(covariant _WavePainter oldDelegate) => true;
 }
 
 class GhostApp extends StatelessWidget {
@@ -167,20 +146,24 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   int xp = 0;
   int retoDias = 90;
   String retoInicio = '';
+  bool vibrar = true;
   int? _stampNum;
   DateTime _mesVisto = DateTime.now();
   List<Habito> habitos = [];
   List<Recordatorio> recordatorios = [];
   Map<String, Map<String, int>> regs = {};
+  Map<String, List<String>> fallados = {};
   bool celebrando = false;
   Recordatorio? _activo;
+  bool _cargando = false;
   final Set<String> _firedDia = {};
   final Map<String, DateTime> _pospuestos = {};
   Timer? _tick;
   static void Function(bool)? _puente;
+  final AudioPlayer _audio = AudioPlayer();
   late final AnimationController _m = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1100),
+    duration: const Duration(milliseconds: 900),
   )..repeat(reverse: true);
   late final AnimationController _reloj = AnimationController(
     vsync: this,
@@ -188,24 +171,32 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   )..repeat();
   late final AnimationController _fuego = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  );
-  late final AnimationController _wave = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2400),
+    duration: const Duration(milliseconds: 2200),
   );
   late final AnimationController _stamp = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 550),
   );
+  late final AnimationController _fill = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  );
+  late final AnimationController _charge = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 700),
+  );
 
   static const fondo = Color(0xFF0A0E14);
-  static const tarjeta = Color(0xFF121822);
+  static const tarjeta = Color(0xFF141A25);
   static const cian = Color(0xFF00D4FF);
   static const lima = Color(0xFF7CFF00);
   static const magenta = Color(0xFFFF3D71);
   static const oro = Color(0xFFFFB300);
   static const rojo = Color(0xFFFF4D4D);
+  static const violeta = Color(0xFFB388FF);
+  static const fuego1 = Color(0xFFFF6D00);
+  static const fuego2 = Color(0xFFFFAB40);
+  static const fuego3 = Color(0xFFFFD180);
 
   static const _palette = [
     0xFF00D4FF,
@@ -281,6 +272,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       if (_activo == null) return;
       _cerrar(hecho);
     };
+    _charge.addStatusListener((st) {
+      if (st == AnimationStatus.completed) _cerrar(true);
+    });
   }
 
   @override
@@ -289,8 +283,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     _m.dispose();
     _reloj.dispose();
     _fuego.dispose();
-    _wave.dispose();
     _stamp.dispose();
+    _fill.dispose();
+    _charge.dispose();
+    _audio.dispose();
     super.dispose();
   }
 
@@ -318,7 +314,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
               key: 'HECHO',
               label: 'HECHO',
               color: const Color(0xFF7CFF00),
-              actionType: ActionType.DismissAction,
+              actionType: ActionType.KeepOnTop,
             ),
             NotificationActionButton(
               key: 'POSTERGAR',
@@ -334,9 +330,24 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   }
 
   Future<void> _pedirPermisos() async {
+    await Permission.notification.request();
+    await Permission.scheduleExactAlarm.request();
+    await Permission.systemAlertWindow.request();
+    await Permission.ignoreBatteryOptimizations.request();
     final ok = await AwesomeNotifications().isNotificationAllowed();
-    if (!ok)
-      await AwesomeNotifications().requestPermissionToSendNotifications();
+    if (!ok) {
+      await AwesomeNotifications().requestPermissionToSendNotifications(
+        channelKey: 'ghost_alarm',
+        permissions: [
+          NotificationPermission.Alert,
+          NotificationPermission.Sound,
+          NotificationPermission.Badge,
+          NotificationPermission.CriticalAlert,
+          NotificationPermission.FullScreenIntent,
+          NotificationPermission.Vibration,
+        ],
+      );
+    }
   }
 
   IconData _icon(String k) {
@@ -383,6 +394,28 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       : a == 'bolt'
       ? Icons.flash_on_rounded
       : Icons.self_improvement_rounded;
+
+  String _animDe(String k) => k == 'drop'
+      ? 'water'
+      : (k == 'fire' || k == 'fit' || k == 'run')
+      ? 'fire'
+      : (k == 'brain' || k == 'meditate' || k == 'sleep')
+      ? 'zen'
+      : 'bolt';
+
+  String _catDe(String k) => k == 'drop'
+      ? 'agua'
+      : (k == 'fit' || k == 'run')
+      ? 'cuerpo'
+      : (k == 'brain' || k == 'meditate' || k == 'book' || k == 'study')
+      ? 'mente'
+      : (k == 'sleep')
+      ? 'sueno'
+      : (k == 'money')
+      ? 'plata'
+      : (k == 'code')
+      ? 'codigo'
+      : 'habito';
 
   String _hoy() => DateTime.now().toIso8601String().substring(0, 10);
   String _fecha(DateTime d) => d.toIso8601String().substring(0, 10);
@@ -456,6 +489,22 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     return (p * _rangos.length).floor().clamp(0, _rangos.length - 1);
   }
 
+  Future<String?> _copiarSonido(String origen) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final g = Directory(dir.path + '/ghost_sonidos');
+      if (!await g.exists()) await g.create(recursive: true);
+      final nombre =
+          DateTime.now().millisecondsSinceEpoch.toString() +
+          '_' +
+          origen.split('/').last;
+      await File(origen).copy(g.path + '/' + nombre);
+      return g.path + '/' + nombre;
+    } catch (e) {
+      return null;
+    }
+  }
+
   Future<void> _cargar() async {
     final p = await SharedPreferences.getInstance();
     final hs = p.getString('g_habitos');
@@ -477,9 +526,14 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         (v as Map).map((a, b) => MapEntry(a as String, (b as num).toInt())),
       ),
     );
+    final fs = p.getString('g_falls') ?? '{}';
+    fallados = (jsonDecode(fs) as Map).map(
+      (k, v) => MapEntry(k as String, (v as List).cast<String>()),
+    );
     xp = p.getInt('g_xp') ?? 0;
     retoDias = p.getInt('g_reto_dias') ?? 90;
     retoInicio = p.getString('g_reto_inicio') ?? '';
+    vibrar = p.getBool('g_vibrar') ?? true;
     setState(() {});
   }
 
@@ -494,9 +548,11 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       jsonEncode(recordatorios.map((e) => e.toJson()).toList()),
     );
     await p.setString('g_regs', jsonEncode(regs));
+    await p.setString('g_falls', jsonEncode(fallados));
     await p.setInt('g_xp', xp);
     await p.setInt('g_reto_dias', retoDias);
     await p.setString('g_reto_inicio', retoInicio);
+    await p.setBool('g_vibrar', vibrar);
   }
 
   void _sumar(Habito h) {
@@ -509,13 +565,23 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       xp += 5;
       if (cur + 1 == h.meta) xp += 10;
     });
-    HapticFeedback.lightImpact();
+    if (vibrar) HapticFeedback.lightImpact();
     if (cur + 1 == h.meta) {
       final n = habitos.where((x) => _done(x)).length;
       _estampar(n);
     }
     final todos = habitos.isNotEmpty && habitos.every((x) => _done(x));
     if (todos && !celebrando) _celebrar();
+    _guardar();
+  }
+
+  void _fallar(Habito h) {
+    final f = _hoy();
+    final list = fallados.putIfAbsent(f, () => []);
+    if (list.contains(h.id)) return;
+    setState(() => list.add(h.id));
+    SystemSound.play(SystemSoundType.alert);
+    if (vibrar) HapticFeedback.heavyImpact();
     _guardar();
   }
 
@@ -530,9 +596,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Future<void> _celebrar() async {
     setState(() => celebrando = true);
     _fuego.forward(from: 0);
-    HapticFeedback.heavyImpact();
-    await Future.delayed(const Duration(milliseconds: 2600));
-    if (mounted) setState(() => celebrando = false);
+    if (vibrar) HapticFeedback.heavyImpact();
+  }
+
+  void _cerrarCelebracion() {
+    setState(() => celebrando = false);
+    _fuego.stop();
   }
 
   void _revisar() {
@@ -557,32 +626,86 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         return;
       }
     }
+    for (final h in habitos) {
+      if (!h.alarma) continue;
+      final key = 'h_' + h.id + '_' + _hoy();
+      if (h.hora == hm && !_firedDia.contains(key)) {
+        _firedDia.add(key);
+        _disparar(
+          Recordatorio(
+            id: h.id,
+            nombre: h.nombre,
+            icono: h.icono,
+            color: h.color,
+            hora: h.hora,
+            anim: _animDe(h.icono),
+            sonido: h.sonido,
+            categoria: _catDe(h.icono),
+          ),
+        );
+        return;
+      }
+    }
   }
 
   void _disparar(Recordatorio r) {
     setState(() => _activo = r);
-    _wave.repeat();
     _stamp.forward(from: 0);
-    HapticFeedback.heavyImpact();
+    _fill.forward(from: 0);
+    if (vibrar) HapticFeedback.heavyImpact();
+    if (r.sonido != null) {
+      _audio.stop();
+      _audio.play(DeviceFileSource(r.sonido!));
+    }
     AwesomeNotifications().createNotification(
       content: NotificationContent(
         id: 500000 + r.id.hashCode.abs() % 100000,
         channelKey: 'ghost_alarm',
         title: r.nombre,
-        body: 'Recordatorio: cumple ahora',
+        body: r.categoria.toUpperCase() + ' · cumple ahora',
         wakeUpScreen: true,
         fullScreenIntent: true,
         category: NotificationCategory.Alarm,
         criticalAlert: true,
         autoDismissible: false,
-        customSound: r.sonido,
       ),
       actionButtons: [
         NotificationActionButton(
           key: 'HECHO',
           label: 'HECHO',
           color: const Color(0xFF7CFF00),
-          actionType: ActionType.DismissAction,
+          actionType: ActionType.KeepOnTop,
+        ),
+        NotificationActionButton(
+          key: 'POSTERGAR',
+          label: '+10 MIN',
+          color: const Color(0xFFFFB300),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _alarmaPrueba() async {
+    final when = DateTime.now().add(const Duration(minutes: 1));
+    await AwesomeNotifications().createNotification(
+      content: NotificationContent(
+        id: 999999,
+        channelKey: 'ghost_alarm',
+        title: 'PRUEBA REAL',
+        body: 'Si ves esto cubriendo tu pantalla, la alarma vive',
+        wakeUpScreen: true,
+        fullScreenIntent: true,
+        category: NotificationCategory.Alarm,
+        criticalAlert: true,
+        autoDismissible: false,
+      ),
+      schedule: NotificationCalendar.fromDate(date: when),
+      actionButtons: [
+        NotificationActionButton(
+          key: 'HECHO',
+          label: 'HECHO',
+          color: const Color(0xFF7CFF00),
+          actionType: ActionType.KeepOnTop,
         ),
         NotificationActionButton(
           key: 'POSTERGAR',
@@ -596,8 +719,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   void _cerrar(bool hecho) {
     final r = _activo;
     if (r == null) return;
+    _audio.stop();
+    AwesomeNotifications().cancel(500000 + r.id.hashCode.abs() % 100000);
     setState(() {
       _activo = null;
+      _cargando = false;
+      _charge.reset();
       if (hecho) {
         final f = _hoy();
         regs.putIfAbsent(f, () => {})[r.id] = (regs[f]?[r.id] ?? 0) + 1;
@@ -606,9 +733,15 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         _pospuestos[r.id] = DateTime.now().add(const Duration(minutes: 10));
       }
     });
-    _wave.stop();
     _guardar();
-    HapticFeedback.mediumImpact();
+    if (vibrar) HapticFeedback.mediumImpact();
+  }
+
+  void _hecho() {
+    if (_cargando) return;
+    setState(() => _cargando = true);
+    _charge.forward(from: 0);
+    if (vibrar) HapticFeedback.mediumImpact();
   }
 
   Future<void> _borrar(Habito h) async {
@@ -672,7 +805,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         category: NotificationCategory.Alarm,
         criticalAlert: true,
         autoDismissible: false,
-        customSound: h.sonido,
         displayOnForeground: true,
         displayOnBackground: true,
       ),
@@ -682,7 +814,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           key: 'HECHO',
           label: 'HECHO',
           color: const Color(0xFF7CFF00),
-          actionType: ActionType.DismissAction,
+          actionType: ActionType.KeepOnTop,
         ),
         NotificationActionButton(
           key: 'POSTERGAR',
@@ -710,7 +842,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         category: NotificationCategory.Alarm,
         criticalAlert: true,
         autoDismissible: false,
-        customSound: r.sonido,
       ),
       schedule: NotificationCalendar(hour: hh, minute: mm, repeats: true),
       actionButtons: [
@@ -718,7 +849,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           key: 'HECHO',
           label: 'HECHO',
           color: const Color(0xFF7CFF00),
-          actionType: ActionType.DismissAction,
+          actionType: ActionType.KeepOnTop,
         ),
         NotificationActionButton(
           key: 'POSTERGAR',
@@ -726,6 +857,57 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           color: const Color(0xFFFFB300),
         ),
       ],
+    );
+  }
+
+  Widget _fuegoVivo(double size) {
+    return AnimatedBuilder(
+      animation: _m,
+      builder: (c, ch) {
+        final f = _m.value;
+        final flick = 0.9 + 0.1 * sin(f * pi * 2);
+        return SizedBox(
+          width: size,
+          height: size,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Icon(
+                Icons.local_fire_department_rounded,
+                color: fuego1.withValues(alpha: 0.22),
+                size: size * 1.5,
+                shadows: [
+                  Shadow(color: fuego1.withValues(alpha: 0.6), blurRadius: 30),
+                ],
+              ),
+              Transform.scale(
+                scale: flick,
+                child: Icon(
+                  Icons.local_fire_department_rounded,
+                  color: fuego1,
+                  size: size,
+                ),
+              ),
+              Transform.scale(
+                scale: 2 - flick,
+                child: Icon(
+                  Icons.whatshot_rounded,
+                  color: fuego2,
+                  size: size * 0.62,
+                ),
+              ),
+              Transform.scale(
+                scale: flick,
+                child: Icon(
+                  Icons.local_fire_department_rounded,
+                  color: fuego3,
+                  size: size * 0.34,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -746,7 +928,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             ),
             child: KeyedSubtree(
               key: ValueKey<int>(tab),
-              child: [_hoyTab(), _progTab(), _recTab(), _habTab()][tab],
+              child: [_hoyTab(), _progTab(), _alarmTab(), _ajustesTab()][tab],
             ),
           ),
         ),
@@ -817,214 +999,182 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Widget _lockOverlay() {
     final r = _activo!;
     final c = Color(r.color);
-    final t = _wave.value;
-    final s = _stamp.value;
     return PopScope(
       canPop: false,
       child: Material(
         color: Colors.transparent,
-        child: Container(
-          color: fondo,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    colors: [c.withValues(alpha: 0.5), fondo],
-                    radius: 0.95,
-                  ),
-                ),
-              ),
-              if (r.anim == 'water') ...[
-                CustomPaint(
-                  painter: _WavePainter(
-                    t: t,
-                    color: c.withValues(alpha: 0.3),
-                    level: 0.58,
-                    amp: 18,
-                  ),
-                  size: Size.infinite,
-                ),
-                CustomPaint(
-                  painter: _WavePainter(
-                    t: t + 0.4,
-                    color: c.withValues(alpha: 0.5),
-                    level: 0.66,
-                    amp: 12,
-                  ),
-                  size: Size.infinite,
-                ),
-                for (var i = 0; i < 8; i++)
-                  Positioned(
-                    left: (i * 47.0) % 320 + 20,
-                    bottom: (t * 300 + i * 90) % 520,
-                    child: Opacity(
-                      opacity: 0.5,
-                      child: Icon(
-                        Icons.water_drop_rounded,
-                        color: c,
-                        size: 10 + (i % 3) * 6,
-                      ),
-                    ),
-                  ),
-              ],
-              if (r.anim == 'fire') ...[
-                for (var i = 0; i < 12; i++)
-                  Positioned(
-                    left: (i * 61.0) % 320 + 16,
-                    bottom: (t * 420 + i * 70) % 620,
-                    child: Opacity(
-                      opacity: 0.6 - 0.4 * (((t * 420 + i * 70) % 620) / 620),
-                      child: Icon(
-                        Icons.local_fire_department_rounded,
-                        color: c,
-                        size: 12 + (i % 4) * 5,
-                      ),
-                    ),
-                  ),
-                Center(
-                  child: Transform.scale(
-                    scale: 1 + 0.15 * sin(t * 2 * pi),
-                    child: Icon(
-                      Icons.local_fire_department_rounded,
-                      color: c.withValues(alpha: 0.35),
-                      size: 190,
-                    ),
-                  ),
-                ),
-              ],
-              if (r.anim == 'bolt') ...[
-                Opacity(
-                  opacity: 0.2 + 0.2 * sin(t * 4 * pi),
-                  child: Container(color: c.withValues(alpha: 0.3)),
-                ),
-                Center(
-                  child: Transform.rotate(
-                    angle: 0.08 * sin(t * 6 * pi),
-                    child: Icon(
-                      Icons.flash_on_rounded,
-                      color: c.withValues(alpha: 0.4),
-                      size: 200,
-                    ),
-                  ),
-                ),
-              ],
-              if (r.anim == 'zen') ...[
-                Center(
-                  child: Transform.scale(
-                    scale: 1 + 0.25 * sin(t * 2 * pi),
-                    child: Container(
-                      width: 230,
-                      height: 230,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: c.withValues(alpha: 0.6),
-                          width: 3,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: c.withValues(alpha: 0.5),
-                            blurRadius: 40,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                Center(
-                  child: Icon(
-                    Icons.self_improvement_rounded,
-                    color: c.withValues(alpha: 0.4),
-                    size: 100,
-                  ),
-                ),
-              ],
-              Center(
-                child: Transform.rotate(
-                  angle: -0.16,
-                  child: Transform.scale(
-                    scale:
-                        1 +
-                        2.2 *
-                            (1 -
-                                Curves.easeOutBack.transform(
-                                  s.clamp(0.0, 1.0),
-                                )),
-                    child: Opacity(
-                      opacity: s.clamp(0.0, 1.0),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(_icon(r.icono), color: Colors.white, size: 64),
-                          const SizedBox(height: 10),
-                          Text(
-                            r.nombre.toUpperCase(),
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 38,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 4,
-                              color: Colors.white,
-                            ),
-                          ),
-                          Text(
-                            r.hora,
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: c,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'CUMPLE AHORA',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              letterSpacing: 3,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              Positioned(
-                left: 24,
-                right: 24,
-                bottom: 46,
-                child: Row(
+        child: AnimatedBuilder(
+          animation: Listenable.merge([_charge, _stamp]),
+          builder: (ctx, ch) {
+            final s = _stamp.value;
+            final q = _charge.value;
+            return Container(
+              color: const Color(0xFF05070B),
+              child: SafeArea(
+                child: Column(
                   children: [
-                    Expanded(
-                      child: FilledButton(
-                        style: FilledButton.styleFrom(
-                          backgroundColor: c,
-                          foregroundColor: const Color(0xFF0A0E14),
-                          padding: const EdgeInsets.symmetric(vertical: 18),
+                    const SizedBox(height: 48),
+                    Opacity(
+                      opacity: s.clamp(0.0, 1.0),
+                      child: Text(
+                        r.nombre.toUpperCase(),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 30,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 4,
+                          color: c,
+                          shadows: [
+                            Shadow(
+                              color: c.withValues(alpha: 0.8),
+                              blurRadius: 24,
+                            ),
+                            Shadow(
+                              color: c.withValues(alpha: 0.4),
+                              blurRadius: 60,
+                            ),
+                          ],
                         ),
-                        onPressed: () => _cerrar(true),
-                        child: const Text('HECHO'),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: c),
-                          padding: const EdgeInsets.symmetric(vertical: 18),
-                        ),
-                        onPressed: () => _cerrar(false),
-                        child: const Text('+10 MIN'),
+                    const SizedBox(height: 10),
+                    Text(
+                      r.categoria.toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11,
+                        letterSpacing: 3,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      r.hora,
+                      style: const TextStyle(
+                        color: Colors.white24,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Spacer(),
+                    SizedBox(
+                      width: 220,
+                      height: 220,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            width: 220,
+                            height: 220,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.08),
+                                width: 6,
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: 220,
+                            height: 220,
+                            child: CircularProgressIndicator(
+                              value: q,
+                              strokeWidth: 6,
+                              strokeCap: StrokeCap.round,
+                              backgroundColor: Colors.transparent,
+                              valueColor: AlwaysStoppedAnimation(c),
+                            ),
+                          ),
+                          if (q > 0)
+                            Container(
+                              width: 220,
+                              height: 220,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: c.withValues(alpha: 0.35 * q),
+                                    blurRadius: 40,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          Icon(
+                            _icon(r.icono),
+                            color: q >= 1
+                                ? c
+                                : Colors.white.withValues(alpha: 0.85),
+                            size: 70,
+                            shadows: [
+                              Shadow(
+                                color: c.withValues(alpha: 0.6),
+                                blurRadius: 20,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Spacer(),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(28, 0, 28, 28),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: c,
+                                foregroundColor: const Color(0xFF05070B),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 16,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              onPressed: _cargando ? null : _hecho,
+                              child: const Text(
+                                'HECHO',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Colors.white24),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 16,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              onPressed: _cargando
+                                  ? null
+                                  : () => _cerrar(false),
+                              child: const Text(
+                                '+10 MIN',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
@@ -1032,76 +1182,104 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
 
   Widget _celebracion() {
     final r = _racha;
-    return IgnorePointer(
-      child: AnimatedBuilder(
-        animation: _fuego,
-        builder: (c, ch) {
-          final t = _fuego.value;
-          return Opacity(
-            opacity: t < 0.8 ? 1.0 : (1 - (t - 0.8) / 0.2).clamp(0.0, 1.0),
-            child: Container(
-              color: Colors.black.withValues(alpha: 0.55),
+    return PopScope(
+      canPop: false,
+      child: Material(
+        color: Colors.transparent,
+        child: AnimatedBuilder(
+          animation: _fuego,
+          builder: (c, ch) {
+            final t = _fuego.value;
+            final e = Curves.easeOutCubic.transform(t.clamp(0.0, 1.0));
+            final numT = Curves.easeOutBack.transform(
+              ((t - 0.4) / 0.6).clamp(0.0, 1.0),
+            );
+            return Container(
+              color: Colors.black.withValues(alpha: 0.88),
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  for (var i = 0; i < 26; i++)
-                    Transform.translate(
-                      offset: Offset(
-                        cos(i * 2 * pi / 26) * 220 * t,
-                        sin(i * 2 * pi / 26) * 220 * t - 60 * t,
-                      ),
-                      child: Transform.rotate(
-                        angle: t * 6 + i,
-                        child: Icon(
-                          Icons.auto_awesome,
-                          color: [lima, cian, oro, magenta][i % 4],
-                          size: 18 + 10 * sin(t * pi),
-                        ),
-                      ),
-                    ),
-                  Transform.scale(
-                    scale:
-                        0.6 +
-                        0.5 * Curves.elasticOut.transform(t.clamp(0.0, 1.0)),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.local_fire_department_rounded,
-                          color: oro,
-                          size: 90 + 20 * sin(t * pi * 3),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'RACHA x' + r.toString(),
-                          style: const TextStyle(
-                            fontSize: 34,
-                            fontWeight: FontWeight.w900,
-                            color: Colors.white,
+                  Icon(
+                    Icons.local_fire_department_rounded,
+                    color: fuego1.withValues(alpha: 0.18 * e),
+                    size: 120 + 160 * e,
+                  ),
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          _fuegoVivo(90 + 40 * e),
+                          const SizedBox(width: 14),
+                          Transform.rotate(
+                            angle: -0.12 * numT,
+                            child: Transform.scale(
+                              scale: 1 + 2.0 * (1 - numT),
+                              child: Text(
+                                r.toString(),
+                                style: const TextStyle(
+                                  fontSize: 90,
+                                  fontWeight: FontWeight.w900,
+                                  color: Colors.white,
+                                  shadows: [
+                                    Shadow(color: fuego1, blurRadius: 30),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
-                        const Text(
-                          'TODOS LOS HABITOS HOY',
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Opacity(
+                        opacity: e,
+                        child: const Text(
+                          'DIAS DE RACHA',
                           style: TextStyle(
-                            color: lima,
+                            color: Colors.white54,
+                            letterSpacing: 4,
+                            fontSize: 12,
                             fontWeight: FontWeight.w800,
-                            letterSpacing: 2,
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 46),
+                      SizedBox(
+                        width: 160,
+                        height: 48,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: fuego1,
+                            foregroundColor: const Color(0xFF0A0E14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: _cerrarCelebracion,
+                          child: const Text(
+                            'OK',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 2,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
 
   Color _tabColor(int i) =>
-      i == 0 ? cian : (i == 1 ? lima : (i == 2 ? magenta : oro));
+      i == 0 ? fuego1 : (i == 1 ? lima : (i == 2 ? magenta : violeta));
 
   Widget _bar() => Padding(
     padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
@@ -1110,9 +1288,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       decoration: BoxDecoration(
         color: tarjeta,
         borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: cian.withValues(alpha: 0.25)),
+        border: Border.all(color: fuego1.withValues(alpha: 0.25)),
         boxShadow: [
-          BoxShadow(color: cian.withValues(alpha: 0.12), blurRadius: 20),
+          BoxShadow(color: fuego1.withValues(alpha: 0.12), blurRadius: 20),
         ],
       ),
       child: Row(
@@ -1127,10 +1305,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           ? Icons.bar_chart_rounded
                           : (i == 2
                                 ? Icons.alarm_rounded
-                                : Icons.tune_rounded)),
+                                : Icons.settings_rounded)),
                 i == 0
                     ? 'HOY'
-                    : (i == 1 ? 'PROG' : (i == 2 ? 'RECORD' : 'HABITOS')),
+                    : (i == 1 ? 'PROG' : (i == 2 ? 'ALARMAS' : 'AJUSTES')),
               ),
             )
             .toList(),
@@ -1143,7 +1321,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     final c = _tabColor(i);
     return GestureDetector(
       onTap: () {
-        HapticFeedback.selectionClick();
+        if (vibrar) HapticFeedback.selectionClick();
         setState(() => tab = i);
       },
       child: AnimatedContainer(
@@ -1179,25 +1357,113 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Widget _glowCard(
     Color c,
     Widget child, {
-    double blur = 16,
-    double alpha = 0.2,
+    double blur = 10,
+    double alpha = 0.12,
   }) => Container(
-    margin: const EdgeInsets.only(bottom: 14),
+    margin: const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(16),
     decoration: BoxDecoration(
       color: tarjeta,
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: c.withValues(alpha: alpha + 0.15)),
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(color: c.withValues(alpha: alpha + 0.10)),
       boxShadow: [
         BoxShadow(
-          color: c.withValues(alpha: alpha),
+          color: c.withValues(alpha: alpha * 0.7),
           blurRadius: blur,
-          spreadRadius: 1,
         ),
       ],
     ),
     child: child,
   );
+
+  Widget _circleTile(Habito h) {
+    final c = Color(h.color);
+    final cnt = _count(h.id);
+    final frac = (cnt / h.meta).clamp(0.0, 1.0);
+    final done = cnt >= h.meta;
+    final failed = fallados[_hoy()]?.contains(h.id) == true;
+    return GestureDetector(
+      onTap: () => _sumar(h),
+      onLongPress: () => _fallar(h),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            width: 84,
+            height: 84,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: failed
+                  ? rojo
+                  : (done ? c : Colors.white.withValues(alpha: 0.05)),
+              border: Border.all(
+                color: failed ? rojo : (done ? c : Colors.white24),
+                width: 2,
+              ),
+              boxShadow: (done || failed)
+                  ? [
+                      BoxShadow(
+                        color: (failed ? rojo : c).withValues(alpha: 0.5),
+                        blurRadius: 18,
+                      ),
+                    ]
+                  : [],
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                SizedBox(
+                  width: 84,
+                  height: 84,
+                  child: CircularProgressIndicator(
+                    value: frac,
+                    strokeWidth: 4,
+                    backgroundColor: Colors.transparent,
+                    valueColor: AlwaysStoppedAnimation(c),
+                  ),
+                ),
+                Text(
+                  h.nombre.isNotEmpty ? h.nombre[0].toUpperCase() : 'G',
+                  style: TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w900,
+                    color: (done || failed)
+                        ? const Color(0xFF0A0E14)
+                        : Colors.white38,
+                  ),
+                ),
+                if (done)
+                  const Positioned(
+                    bottom: 8,
+                    child: Icon(
+                      Icons.check_rounded,
+                      color: Color(0xFF0A0E14),
+                      size: 16,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            width: 90,
+            child: Text(
+              h.nombre,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Colors.white70,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _hoyTab() {
     final doneCount = habitos.where((h) => _done(h)).length;
@@ -1212,49 +1478,22 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       children: [
         Row(
           children: [
-            AnimatedBuilder(
-              animation: _m,
-              builder: (c, ch) => Transform.translate(
-                offset: Offset(0, -4 * sin(_m.value * pi)),
-                child: Transform.rotate(
-                  angle: 0.07 * sin(_m.value * 2 * pi),
-                  child: ch,
-                ),
-              ),
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: cian.withValues(alpha: 0.14),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: cian.withValues(alpha: 0.4),
-                      blurRadius: 16,
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.local_fire_department,
-                  color: oro,
-                  size: 26,
-                ),
-              ),
-            ),
+            _fuegoVivo(56),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    _saludo() + ', capitan',
+                    _racha.toString() + ' dias de racha',
                     style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w900,
-                      color: Colors.white,
+                      color: fuego2,
                     ),
                   ),
                   Text(
-                    _fechaLarga(),
+                    _saludo() + ', capitan · ' + _fechaLarga(),
                     style: const TextStyle(color: Colors.white38, fontSize: 12),
                   ),
                 ],
@@ -1270,16 +1509,16 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     vertical: 8,
                   ),
                   decoration: BoxDecoration(
-                    color: cian.withValues(alpha: 0.1),
+                    color: fuego1.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: cian.withValues(alpha: 0.4)),
+                    border: Border.all(color: fuego1.withValues(alpha: 0.4)),
                   ),
                   child: Text(
                     n.hour.toString().padLeft(2, '0') +
                         ':' +
                         n.minute.toString().padLeft(2, '0'),
                     style: const TextStyle(
-                      color: cian,
+                      color: fuego2,
                       fontWeight: FontWeight.w900,
                       fontSize: 16,
                     ),
@@ -1291,7 +1530,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         ),
         const SizedBox(height: 14),
         _glowCard(
-          cian,
+          fuego1,
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1325,27 +1564,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     value: f,
                     minHeight: 10,
                     backgroundColor: Colors.white10,
-                    valueColor: AlwaysStoppedAnimation(cian),
+                    valueColor: AlwaysStoppedAnimation(fuego1),
                   ),
                 ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: _rangos
-                    .asMap()
-                    .entries
-                    .map(
-                      (e) => Text(
-                        e.value.substring(0, 1),
-                        style: TextStyle(
-                          fontSize: 9,
-                          color: e.key <= _rangoIdx ? cian : Colors.white24,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    )
-                    .toList(),
               ),
             ],
           ),
@@ -1389,7 +1610,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'COMPLETADO HOY',
+                      'MISION DE HOY',
                       style: TextStyle(
                         color: Colors.white38,
                         fontSize: 11,
@@ -1411,10 +1632,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Racha: ' +
-                          _racha.toString() +
-                          ' dias  ·  XP ' +
-                          xp.toString(),
+                      'XP ' + xp.toString(),
                       style: TextStyle(
                         color: oro,
                         fontWeight: FontWeight.w700,
@@ -1428,6 +1646,17 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           ),
           alpha: 0.25,
         ),
+        const SizedBox(height: 4),
+        const Text(
+          'TOCA = CUMPLIR · MANTEN = FALLAR',
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 10,
+            letterSpacing: 1.5,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 12),
         if (habitos.isEmpty)
           _glowCard(
             magenta,
@@ -1447,7 +1676,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   ),
                 ),
                 const Text(
-                  'Ve a HABITOS y crea tu primer reto',
+                  'Ve a AJUSTES y crea tu primer reto',
                   style: TextStyle(color: Colors.white38, fontSize: 12),
                 ),
               ],
@@ -1455,240 +1684,52 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             alpha: 0.2,
           )
         else
-          ...habitos.asMap().entries.map((e) => _card(e.value, e.key)),
+          Wrap(
+            spacing: 14,
+            runSpacing: 18,
+            alignment: WrapAlignment.center,
+            children: habitos.map((h) => _circleTile(h)).toList(),
+          ),
+        const SizedBox(height: 16),
+        GestureDetector(
+          onTap: () => _nuevo(),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            decoration: BoxDecoration(
+              color: lima.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: lima.withValues(alpha: 0.4),
+                width: 1.2,
+              ),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.add_rounded, color: lima, size: 22),
+                SizedBox(width: 8),
+                Text(
+                  'NUEVO HABITO',
+                  style: TextStyle(
+                    color: lima,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.5,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
 
-  Widget _card(Habito h, int i) {
-    final c = Color(h.color);
-    final cnt = _count(h.id);
-    final frac = (cnt / h.meta).clamp(0.0, 1.0);
-    final done = cnt >= h.meta;
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 340 + i * 70),
-      curve: Curves.easeOutBack,
-      builder: (c2, t, ch) => Opacity(
-        opacity: t.clamp(0.0, 1.0),
-        child: Transform.scale(scale: 0.92 + 0.08 * t, child: ch),
-      ),
-      child: GestureDetector(
-        onTap: () => _sumar(h),
-        onLongPress: () => _borrar(h),
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: tarjeta,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: c.withValues(alpha: done ? 0.9 : 0.35),
-              width: done ? 2 : 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: c.withValues(alpha: done ? 0.45 : 0.16),
-                blurRadius: done ? 26 : 14,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Row(
-                children: [
-                  TweenAnimationBuilder<double>(
-                    key: ValueKey<String>('b' + h.id + cnt.toString()),
-                    tween: Tween(begin: 1.35, end: 1.0),
-                    duration: const Duration(milliseconds: 340),
-                    curve: Curves.easeOutBack,
-                    builder: (c3, s, ch) =>
-                        Transform.scale(scale: s, child: ch),
-                    child: Stack(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: c.withValues(alpha: 0.16),
-                            borderRadius: BorderRadius.circular(18),
-                            boxShadow: [
-                              BoxShadow(
-                                color: c.withValues(alpha: 0.3),
-                                blurRadius: 10,
-                              ),
-                            ],
-                          ),
-                          child: Icon(_icon(h.icono), color: c, size: 26),
-                        ),
-                        if (h.alarma)
-                          Positioned(
-                            right: -4,
-                            top: -4,
-                            child: Container(
-                              padding: const EdgeInsets.all(3),
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF0A0E14),
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(
-                                Icons.alarm_on_rounded,
-                                color: oro,
-                                size: 12,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                h.nombre,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 16,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                            if (h.alarma)
-                              Text(
-                                h.hora,
-                                style: TextStyle(
-                                  color: oro,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: TweenAnimationBuilder<double>(
-                            tween: Tween(begin: 0, end: frac),
-                            duration: const Duration(milliseconds: 450),
-                            curve: Curves.easeOutCubic,
-                            builder: (c4, f, ch) => LinearProgressIndicator(
-                              value: f,
-                              minHeight: 8,
-                              backgroundColor: Colors.white10,
-                              valueColor: AlwaysStoppedAnimation(c),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          cnt.toString() + ' / ' + h.meta.toString(),
-                          style: TextStyle(
-                            color: c,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  TweenAnimationBuilder<double>(
-                    tween: Tween(begin: 0, end: frac),
-                    duration: const Duration(milliseconds: 500),
-                    builder: (c5, f, ch) => SizedBox(
-                      width: 44,
-                      height: 44,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          CircularProgressIndicator(
-                            value: f,
-                            strokeWidth: 5,
-                            backgroundColor: Colors.white10,
-                            valueColor: AlwaysStoppedAnimation(c),
-                          ),
-                          Text(
-                            (f * 100).round().toString(),
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: c,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              if (cnt > 0)
-                Positioned(
-                  right: 4,
-                  top: -12,
-                  child: TweenAnimationBuilder<double>(
-                    key: ValueKey<String>('x' + h.id + cnt.toString()),
-                    tween: Tween(begin: 0, end: 1),
-                    duration: const Duration(milliseconds: 750),
-                    builder: (c6, t, ch) => Opacity(
-                      opacity: (1 - t).clamp(0.0, 1.0),
-                      child: Transform.translate(
-                        offset: Offset(0, -36 * t),
-                        child: ch,
-                      ),
-                    ),
-                    child: Text(
-                      '+5',
-                      style: TextStyle(
-                        color: c,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                ),
-              if (done)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: TweenAnimationBuilder<double>(
-                      key: ValueKey<String>('burst' + h.id + cnt.toString()),
-                      tween: Tween(begin: 0, end: 1),
-                      duration: const Duration(milliseconds: 700),
-                      builder: (c7, t, ch) => Opacity(
-                        opacity: (1 - t).clamp(0.0, 1.0),
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            for (var k = 0; k < 8; k++)
-                              Transform.translate(
-                                offset: Offset(
-                                  cos(k * pi / 4) * 74 * t,
-                                  sin(k * pi / 4) * 74 * t,
-                                ),
-                                child: Icon(
-                                  Icons.auto_awesome,
-                                  color: c,
-                                  size: 14,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      child: const SizedBox.shrink(),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  Widget _statusIcon(int st) => st == 2
+      ? const Icon(Icons.check_circle_rounded, color: lima, size: 20)
+      : st == 1
+      ? const Icon(Icons.fiber_manual_record_rounded, color: oro, size: 12)
+      : const Icon(Icons.cancel_rounded, color: rojo, size: 20);
 
   Widget _calendario() {
     final primero = DateTime(_mesVisto.year, _mesVisto.month, 1);
@@ -1715,7 +1756,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: esHoy
-                    ? cian
+                    ? fuego1
                     : (hay ? col.withValues(alpha: 0.55) : Colors.white10),
                 width: esHoy ? 2 : 1,
               ),
@@ -1770,7 +1811,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       filas.add(Row(children: fila));
     }
     return _glowCard(
-      cian,
+      fuego1,
       Column(
         children: [
           Row(
@@ -1783,7 +1824,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     1,
                   ),
                 ),
-                icon: const Icon(Icons.chevron_left_rounded, color: cian),
+                icon: const Icon(Icons.chevron_left_rounded, color: fuego1),
               ),
               Expanded(
                 child: Text(
@@ -1806,7 +1847,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     1,
                   ),
                 ),
-                icon: const Icon(Icons.chevron_right_rounded, color: cian),
+                icon: const Icon(Icons.chevron_right_rounded, color: fuego1),
               ),
             ],
           ),
@@ -1834,11 +1875,11 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _leyenda(lima, '100%'),
+              _leyenda(lima, Icons.check_circle_rounded, '100%'),
               const SizedBox(width: 14),
-              _leyenda(oro, '>=50%'),
+              _leyenda(oro, Icons.fiber_manual_record_rounded, '>=50%'),
               const SizedBox(width: 14),
-              _leyenda(rojo, '<50%'),
+              _leyenda(rojo, Icons.cancel_rounded, '<50%'),
             ],
           ),
         ],
@@ -1847,19 +1888,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     );
   }
 
-  Widget _leyenda(Color c, String t) => Row(
+  Widget _leyenda(Color c, IconData ic, String t) => Row(
     children: [
-      Container(
-        width: 8,
-        height: 8,
-        decoration: BoxDecoration(
-          color: c,
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(color: c.withValues(alpha: 0.6), blurRadius: 6),
-          ],
-        ),
-      ),
+      Icon(ic, color: c, size: 12),
       const SizedBox(width: 5),
       Text(
         t,
@@ -1923,7 +1954,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                 final cnt = regs[f]?[h.id] ?? 0;
                 final st = cnt >= h.meta ? 2 : (cnt > 0 ? 1 : 0);
                 final col = st == 2 ? lima : (st == 1 ? oro : rojo);
-                final lbl = st == 2 ? 'BIEN' : (st == 1 ? 'A MEDIAS' : 'MAL');
                 return Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   padding: const EdgeInsets.symmetric(
@@ -1931,9 +1961,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     vertical: 10,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.white10,
+                    color: Colors.white.withValues(alpha: 0.04),
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: col.withValues(alpha: 0.35)),
+                    border: Border.all(color: col.withValues(alpha: 0.25)),
                   ),
                   child: Row(
                     children: [
@@ -1945,6 +1975,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w700,
+                            fontSize: 14,
                           ),
                         ),
                       ),
@@ -1956,24 +1987,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: col.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          lbl,
-                          style: TextStyle(
-                            color: col,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ),
+                      _statusIcon(st),
                     ],
                   ),
                 );
@@ -1983,154 +1997,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       ),
     );
   }
-
-  Widget _recTab() => ListView(
-    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-    children: [
-      const Text(
-        'RECORDATORIOS',
-        style: TextStyle(
-          color: Colors.white38,
-          fontSize: 12,
-          letterSpacing: 3,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-      const SizedBox(height: 4),
-      const Text(
-        'Te bloquean la pantalla hasta que cumplas',
-        style: TextStyle(color: Colors.white24, fontSize: 12),
-      ),
-      const SizedBox(height: 14),
-      if (recordatorios.isEmpty)
-        _glowCard(
-          cian,
-          Column(
-            children: [
-              const Icon(Icons.alarm_off_rounded, color: cian, size: 38),
-              const SizedBox(height: 8),
-              const Text(
-                'Sin recordatorios',
-                style: TextStyle(color: Colors.white70),
-              ),
-              const Text(
-                'Crea uno abajo y pruebalo con PROBAR',
-                style: TextStyle(color: Colors.white24, fontSize: 12),
-              ),
-            ],
-          ),
-          alpha: 0.18,
-        )
-      else
-        ...recordatorios.map(
-          (r) => GestureDetector(
-            onLongPress: () => _borrarRec(r),
-            child: _glowCard(
-              Color(r.color),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Color(r.color).withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(
-                      _animIcon(r.anim),
-                      color: Color(r.color),
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          r.nombre,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
-                          ),
-                        ),
-                        Text(
-                          r.hora + '  ·  ' + r.anim,
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => _disparar(r),
-                    icon: const Icon(
-                      Icons.play_arrow_rounded,
-                      color: Colors.white70,
-                    ),
-                  ),
-                  Switch(
-                    value: r.activo,
-                    activeColor: Color(r.color),
-                    onChanged: (v) {
-                      setState(() {
-                        recordatorios.remove(r);
-                        recordatorios.add(
-                          Recordatorio(
-                            id: r.id,
-                            nombre: r.nombre,
-                            icono: r.icono,
-                            color: r.color,
-                            hora: r.hora,
-                            anim: r.anim,
-                            activo: v,
-                            sonido: r.sonido,
-                          ),
-                        );
-                      });
-                      _programarRec(recordatorios.last);
-                      _guardar();
-                    },
-                  ),
-                ],
-              ),
-              alpha: 0.18,
-              blur: 12,
-            ),
-          ),
-        ),
-      GestureDetector(
-        onTap: _nuevoRec,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 18),
-          decoration: BoxDecoration(
-            color: cian.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: cian.withValues(alpha: 0.5), width: 1.5),
-            boxShadow: [
-              BoxShadow(color: cian.withValues(alpha: 0.2), blurRadius: 16),
-            ],
-          ),
-          child: const Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.add_alarm_rounded, color: cian, size: 26),
-              SizedBox(width: 8),
-              Text(
-                'NUEVO RECORDATORIO',
-                style: TextStyle(
-                  color: cian,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ],
-  );
 
   Widget _progTab() {
     final dias = <String>[];
@@ -2172,7 +2038,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             ),
             Expanded(
               child: _glowCard(
-                magenta,
+                fuego1,
                 Column(
                   children: [
                     const Text(
@@ -2187,25 +2053,14 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        AnimatedBuilder(
-                          animation: _m,
-                          builder: (c, ch) => Transform.scale(
-                            scale: 1 + 0.12 * _m.value,
-                            child: ch,
-                          ),
-                          child: const Icon(
-                            Icons.local_fire_department_rounded,
-                            color: magenta,
-                            size: 26,
-                          ),
-                        ),
+                        _fuegoVivo(30),
                         const SizedBox(width: 6),
                         Text(
                           _racha.toString() + ' d',
                           style: const TextStyle(
                             fontSize: 30,
                             fontWeight: FontWeight.w900,
-                            color: magenta,
+                            color: fuego2,
                           ),
                         ),
                       ],
@@ -2316,11 +2171,236 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     );
   }
 
-  Widget _habTab() => ListView(
+  Widget _alarmTab() => ListView(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+    children: [
+      const Text(
+        'RECORDATORIOS',
+        style: TextStyle(
+          color: Colors.white38,
+          fontSize: 12,
+          letterSpacing: 3,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 4),
+      const Text(
+        'Te bloquean la pantalla hasta que cumplas',
+        style: TextStyle(color: Colors.white24, fontSize: 12),
+      ),
+      const SizedBox(height: 14),
+      if (recordatorios.isEmpty)
+        _glowCard(
+          cian,
+          Column(
+            children: [
+              const Icon(Icons.alarm_off_rounded, color: cian, size: 38),
+              const SizedBox(height: 8),
+              const Text(
+                'Sin recordatorios',
+                style: TextStyle(color: Colors.white70),
+              ),
+            ],
+          ),
+          alpha: 0.18,
+        )
+      else
+        ...recordatorios.map(
+          (r) => GestureDetector(
+            onLongPress: () => _borrarRec(r),
+            child: _glowCard(
+              Color(r.color),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Color(r.color).withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(
+                      _animIcon(r.anim),
+                      color: Color(r.color),
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          r.nombre,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                        Text(
+                          r.hora + '  ·  ' + r.categoria,
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => _disparar(r),
+                    icon: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white70,
+                    ),
+                  ),
+                  Switch(
+                    value: r.activo,
+                    activeColor: Color(r.color),
+                    onChanged: (v) {
+                      setState(() {
+                        recordatorios.remove(r);
+                        recordatorios.add(
+                          Recordatorio(
+                            id: r.id,
+                            nombre: r.nombre,
+                            icono: r.icono,
+                            color: r.color,
+                            hora: r.hora,
+                            anim: r.anim,
+                            activo: v,
+                            sonido: r.sonido,
+                            categoria: r.categoria,
+                          ),
+                        );
+                      });
+                      _programarRec(recordatorios.last);
+                      _guardar();
+                    },
+                  ),
+                ],
+              ),
+              alpha: 0.18,
+              blur: 12,
+            ),
+          ),
+        ),
+      const SizedBox(height: 8),
+      const Text(
+        'HABITOS CON ALARMA',
+        style: TextStyle(
+          color: Colors.white38,
+          fontSize: 12,
+          letterSpacing: 3,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 10),
+      if (habitos.where((h) => h.alarma).isEmpty)
+        const Text(
+          'Ningun habito tiene alarma activada',
+          style: TextStyle(color: Colors.white24, fontSize: 12),
+        )
+      else
+        ...habitos
+            .where((h) => h.alarma)
+            .map(
+              (h) => GestureDetector(
+                onTap: () => _nuevo(editar: h),
+                child: _glowCard(
+                  Color(h.color),
+                  Row(
+                    children: [
+                      Icon(_icon(h.icono), color: Color(h.color), size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          h.nombre,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        h.hora,
+                        style: TextStyle(
+                          color: oro,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                  alpha: 0.15,
+                  blur: 10,
+                ),
+              ),
+            ),
+      const SizedBox(height: 14),
+      GestureDetector(
+        onTap: _nuevoRec,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          decoration: BoxDecoration(
+            color: cian.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: cian.withValues(alpha: 0.5), width: 1.5),
+            boxShadow: [
+              BoxShadow(color: cian.withValues(alpha: 0.2), blurRadius: 16),
+            ],
+          ),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.add_alarm_rounded, color: cian, size: 26),
+              SizedBox(width: 8),
+              Text(
+                'NUEVO RECORDATORIO',
+                style: TextStyle(
+                  color: cian,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 2,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 10),
+      GestureDetector(
+        onTap: _alarmaPrueba,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: oro.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: oro.withValues(alpha: 0.5), width: 1.2),
+          ),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.timer_rounded, color: oro, size: 22),
+              SizedBox(width: 8),
+              Text(
+                'ALARMA REAL EN 1 MIN',
+                style: TextStyle(
+                  color: oro,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+
+  Widget _ajustesTab() => ListView(
     padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
     children: [
       _glowCard(
-        cian,
+        fuego1,
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2349,13 +2429,13 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                       text: retoDias.toString(),
                     ),
                     style: const TextStyle(
-                      color: cian,
+                      color: fuego2,
                       fontWeight: FontWeight.w900,
                     ),
                     textAlign: TextAlign.center,
                     decoration: InputDecoration(
                       filled: true,
-                      fillColor: Colors.white10,
+                      fillColor: Colors.white.withValues(alpha: 0.04),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
@@ -2378,13 +2458,13 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                 Expanded(
                   child: FilledButton(
                     style: FilledButton.styleFrom(
-                      backgroundColor: cian,
+                      backgroundColor: fuego1,
                       foregroundColor: const Color(0xFF0A0E14),
                     ),
                     onPressed: () {
                       setState(() => retoInicio = _hoy());
                       _guardar();
-                      HapticFeedback.mediumImpact();
+                      if (vibrar) HapticFeedback.mediumImpact();
                     },
                     child: const Text('EMPEZAR RETO'),
                   ),
@@ -2393,7 +2473,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             ),
             const SizedBox(height: 8),
             Text(
-              'Rango actual: ' +
+              'Rango: ' +
                   _rangos[_rangoIdx] +
                   '  ·  Dia ' +
                   _diasReto.toString() +
@@ -2409,119 +2489,210 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         ),
         alpha: 0.2,
       ),
-      const SizedBox(height: 4),
-      const Text(
-        'TUS HABITOS  (toca = editar, manten = eliminar)',
-        style: TextStyle(
-          color: Colors.white38,
-          fontSize: 11,
-          letterSpacing: 2,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-      const SizedBox(height: 12),
-      if (habitos.isEmpty)
-        _glowCard(
-          magenta,
-          const Column(
-            children: [
-              Icon(Icons.inbox_rounded, color: magenta, size: 36),
-              SizedBox(height: 8),
-              Text(
-                'Crea tu primer habito abajo',
-                style: TextStyle(color: Colors.white70),
+      _glowCard(
+        violeta,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'PREFERENCIAS',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 2,
+                fontWeight: FontWeight.w700,
               ),
-            ],
-          ),
-          alpha: 0.18,
-        )
-      else
-        ...habitos.map(
-          (h) => GestureDetector(
-            onTap: () => _nuevo(editar: h),
-            onLongPress: () => _borrar(h),
-            child: _glowCard(
-              Color(h.color),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              activeColor: violeta,
+              title: const Text(
+                'Vibracion',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14,
+                ),
+              ),
+              value: vibrar,
+              onChanged: (v) {
+                setState(() => vibrar = v);
+                _guardar();
+              },
+            ),
+          ],
+        ),
+        alpha: 0.18,
+      ),
+      _glowCard(
+        cian,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'PERMISOS',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 2,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Si las alarmas no suenan con la app cerrada, vuelve a pedir permisos y revisa las 4 puertas de XOS.',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonal(
+                onPressed: _pedirPermisos,
+                child: const Text('VOLVER A PEDIR PERMISOS'),
+              ),
+            ),
+          ],
+        ),
+        alpha: 0.18,
+      ),
+      _glowCard(
+        magenta,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'TUS HABITOS  (toca = editar, manten = eliminar)',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 1.5,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 10),
+            if (habitos.isEmpty)
+              const Text(
+                'Crea tu primer habito abajo',
+                style: TextStyle(color: Colors.white38, fontSize: 12),
+              )
+            else
+              ...habitos.map(
+                (h) => GestureDetector(
+                  onTap: () => _nuevo(editar: h),
+                  onLongPress: () => _borrar(h),
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Color(h.color).withValues(alpha: 0.16),
+                      color: Colors.white.withValues(alpha: 0.04),
                       borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: Color(h.color).withValues(alpha: 0.25),
+                      ),
                     ),
-                    child: Icon(
-                      _icon(h.icono),
-                      color: Color(h.color),
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Row(
                       children: [
-                        Text(
-                          h.nombre,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
+                        Icon(_icon(h.icono), color: Color(h.color), size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                h.nombre,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              Text(
+                                'meta ' +
+                                    h.meta.toString() +
+                                    (h.alarma ? '  ·  alarma ' + h.hora : ''),
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        Text(
-                          'meta ' +
-                              h.meta.toString() +
-                              (h.alarma
-                                  ? '  ·  alarma ' + h.hora
-                                  : '  ·  sin alarma'),
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 12,
-                          ),
+                        const Icon(
+                          Icons.edit_rounded,
+                          color: Colors.white24,
+                          size: 18,
                         ),
                       ],
                     ),
                   ),
-                  const Icon(
-                    Icons.edit_rounded,
-                    color: Colors.white24,
-                    size: 18,
+                ),
+              ),
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () => _nuevo(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  color: lima.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: lima.withValues(alpha: 0.4),
+                    width: 1.2,
+                  ),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add_rounded, color: lima, size: 22),
+                    SizedBox(width: 8),
+                    Text(
+                      'NUEVO HABITO',
+                      style: TextStyle(
+                        color: lima,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        alpha: 0.15,
+      ),
+      _glowCard(
+        oro,
+        Row(
+          children: [
+            const Icon(
+              Icons.local_fire_department_rounded,
+              color: oro,
+              size: 22,
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'GHOST v4',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  Text(
+                    'Sistema operativo personal',
+                    style: TextStyle(color: Colors.white38, fontSize: 11),
                   ),
                 ],
               ),
-              alpha: 0.15,
-              blur: 10,
             ),
-          ),
+          ],
         ),
-      GestureDetector(
-        onTap: () => _nuevo(),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 18),
-          decoration: BoxDecoration(
-            color: lima.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: lima.withValues(alpha: 0.5), width: 1.5),
-            boxShadow: [
-              BoxShadow(color: lima.withValues(alpha: 0.2), blurRadius: 16),
-            ],
-          ),
-          child: const Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.add_rounded, color: lima, size: 26),
-              SizedBox(width: 8),
-              Text(
-                'NUEVO HABITO',
-                style: TextStyle(
-                  color: lima,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2,
-                ),
-              ),
-            ],
-          ),
-        ),
+        alpha: 0.15,
       ),
     ],
   );
@@ -2530,7 +2701,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     labelText: l,
     labelStyle: const TextStyle(color: Colors.white38),
     filled: true,
-    fillColor: Colors.white10,
+    fillColor: Colors.white.withValues(alpha: 0.04),
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(14),
       borderSide: BorderSide.none,
@@ -2647,7 +2818,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           decoration: BoxDecoration(
                             color: icono == k
                                 ? Color(color).withValues(alpha: 0.25)
-                                : Colors.white10,
+                                : Colors.white.withValues(alpha: 0.04),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
                               color: icono == k
@@ -2705,8 +2876,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                       final res = await FilePicker.platform.pickFiles(
                         type: FileType.audio,
                       );
-                      if (res != null && res.files.isNotEmpty)
-                        setS(() => sonido = res.files.first.path);
+                      if (res != null && res.files.isNotEmpty) {
+                        final interno = await _copiarSonido(
+                          res.files.first.path!,
+                        );
+                        setS(() => sonido = interno);
+                      }
                     },
                     icon: const Icon(Icons.upload_file_rounded, size: 18),
                     label: Text(
@@ -2835,18 +3010,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   ],
                 ),
                 const SizedBox(height: 16),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'COLOR DEL BLOQUEO',
-                    style: TextStyle(
-                      color: Colors.white38,
-                      fontSize: 11,
-                      letterSpacing: 2,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -2879,18 +3042,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   ],
                 ),
                 const SizedBox(height: 16),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'ANIMACION DEL BLOQUEO',
-                    style: TextStyle(
-                      color: Colors.white38,
-                      fontSize: 11,
-                      letterSpacing: 2,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -2907,7 +3058,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           decoration: BoxDecoration(
                             color: anim == a
                                 ? Color(color).withValues(alpha: 0.25)
-                                : Colors.white10,
+                                : Colors.white.withValues(alpha: 0.04),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
                               color: anim == a
@@ -2940,8 +3091,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     final res = await FilePicker.platform.pickFiles(
                       type: FileType.audio,
                     );
-                    if (res != null && res.files.isNotEmpty)
-                      setS(() => sonido = res.files.first.path);
+                    if (res != null && res.files.isNotEmpty) {
+                      final interno = await _copiarSonido(
+                        res.files.first.path!,
+                      );
+                      setS(() => sonido = interno);
+                    }
                   },
                   icon: const Icon(Icons.upload_file_rounded, size: 18),
                   label: Text(
