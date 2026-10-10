@@ -95,7 +95,7 @@ class _ArkAppState extends State<ArkApp> {
       useMaterial3: true,
       brightness: dark ? Brightness.dark : Brightness.light,
       scaffoldBackgroundColor: dark
-          ? const Color(0xFF0B0F14)
+          ? const Color(0xFF07090D)
           : const Color(0xFFF6F4EF),
       colorSchemeSeed: dark ? const Color(0xFF39FF88) : const Color(0xFF16A34A),
     ),
@@ -111,14 +111,19 @@ class Home extends StatefulWidget {
   State<Home> createState() => _HomeState();
 }
 
-class _HomeState extends State<Home> with TickerProviderStateMixin {
+class _HomeState extends State<Home>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   int tab = 0;
   List<Habit> habits = [];
   Map<String, Map<String, int>> logs = {};
   Map<String, List<String>> failed = {};
   final Set<String> _fired = {};
   Habit? _active;
+  String _result = '';
   Timer? _tick;
+  Timer? _focusTimer;
+  int _focusLeft = 25 * 60;
+  bool _focusOn = false;
   static void Function(bool)? _bridge;
   late final AnimationController _flame = AnimationController(
     vsync: this,
@@ -130,11 +135,11 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   );
 
   bool get _dark => widget.dark;
-  Color get bg => _dark ? const Color(0xFF0B0F14) : const Color(0xFFF6F4EF);
-  Color get card => _dark ? const Color(0xFF141B24) : const Color(0xFFFFFFFF);
+  Color get bg => _dark ? const Color(0xFF07090D) : const Color(0xFFF6F4EF);
+  Color get card => _dark ? const Color(0xFF10161D) : const Color(0xFFFFFFFF);
   Color get ink => _dark ? const Color(0xFFEAF2EF) : const Color(0xFF20241F);
   Color get sub => _dark ? const Color(0xFF8FA0AB) : const Color(0xFF79806F);
-  Color get line => _dark ? const Color(0xFF24313D) : const Color(0xFFE5E2D9);
+  Color get line => _dark ? const Color(0xFF1E2A35) : const Color(0xFFE5E2D9);
   Color get green => _dark ? const Color(0xFF39FF88) : const Color(0xFF16A34A);
   Color get greenDark =>
       _dark ? const Color(0xFF1FBF63) : const Color(0xFF15803D);
@@ -145,6 +150,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Color get redDark =>
       _dark ? const Color(0xFFE04444) : const Color(0xFFB91C1C);
   Color get cyan => _dark ? const Color(0xFF00E5FF) : const Color(0xFF0891B2);
+  Color get cyanDark =>
+      _dark ? const Color(0xFF0097A7) : const Color(0xFF0E7490);
 
   static const _colors = [
     0xFF39FF88,
@@ -168,6 +175,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
     _tick = Timer.periodic(const Duration(seconds: 15), (_) => _checkTime());
     if (!kIsWeb) {
@@ -182,9 +190,18 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   @override
   void dispose() {
     _tick?.cancel();
+    _focusTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _flame.dispose();
     _ovl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _rescheduleAll();
+    }
   }
 
   @pragma('vm:entry-point')
@@ -267,6 +284,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       (k, v) => MapEntry(k as String, (v as List).cast<String>()),
     );
     setState(() {});
+    _rescheduleAll();
   }
 
   Future<void> _save() async {
@@ -380,6 +398,34 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     );
   }
 
+  void _showFocusDone() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text(
+          'BLOQUE FOCO COMPLETO',
+          style: TextStyle(color: ink, fontWeight: FontWeight.w900),
+        ),
+        content: Text(
+          '25 minutos de trabajo profundo. Anotalo en tu bitacora.',
+          style: TextStyle(color: sub, fontWeight: FontWeight.w600),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: Text(
+              'SEGUIR',
+              style: TextStyle(color: green, fontWeight: FontWeight.w800),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   int _notifId(Habit h) => 1000 + h.id.hashCode.abs() % 9000;
 
   Future<void> _schedule(Habit h) async {
@@ -398,6 +444,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           body: 'Cumplido o fallido. Tu eliges.',
           category: NotificationCategory.Alarm,
           wakeUpScreen: true,
+          fullScreenIntent: true,
           autoDismissible: false,
           displayOnBackground: true,
           displayOnForeground: true,
@@ -419,6 +466,13 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     } catch (_) {}
   }
 
+  Future<void> _rescheduleAll() async {
+    if (kIsWeb) return;
+    for (final h in habits) {
+      if (h.alarm != null) await _schedule(h);
+    }
+  }
+
   Future<void> _fireNow(Habit h) async {
     if (!kIsWeb) {
       try {
@@ -430,6 +484,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             body: 'Cumplido o fallido. Tu eliges.',
             category: NotificationCategory.Alarm,
             wakeUpScreen: true,
+            fullScreenIntent: true,
             autoDismissible: false,
             displayOnBackground: true,
             displayOnForeground: true,
@@ -450,7 +505,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       } catch (_) {}
     }
     if (_active == null) {
-      setState(() => _active = h);
+      setState(() {
+        _active = h;
+        _result = '';
+      });
       _ovl.forward(from: 0);
     }
   }
@@ -471,6 +529,16 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     }
   }
 
+  void _answer(bool done) {
+    if (_result != '') return;
+    setState(() => _result = done ? 'done' : 'fail');
+    _haptic();
+    Future.delayed(
+      const Duration(milliseconds: 500),
+      () => _closeOverlay(done),
+    );
+  }
+
   void _closeOverlay(bool done) {
     final h = _active;
     if (h == null) return;
@@ -481,6 +549,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     }
     setState(() {
       _active = null;
+      _result = '';
       if (!done) {
         final list = failed.putIfAbsent(_today(), () => []);
         if (!list.contains(h.id)) list.add(h.id);
@@ -488,7 +557,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     });
     if (done) _increment(h);
     _save();
-    _haptic();
   }
 
   Future<void> _perms() async {
@@ -509,6 +577,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       await Permission.scheduleExactAlarm.request();
     } catch (_) {}
     try {
+      await Permission.ignoreBatteryOptimizations.request();
+    } catch (_) {}
+    try {
       final ok = await AwesomeNotifications().isNotificationAllowed();
       if (!ok) {
         await AwesomeNotifications().requestPermissionToSendNotifications(
@@ -524,6 +595,46 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       }
     } catch (_) {}
   }
+
+  Future<void> _openAppSettings() async {
+    try {
+      await openAppSettings();
+    } catch (_) {}
+  }
+
+  void _startFocus() {
+    if (_focusOn) return;
+    setState(() => _focusOn = true);
+    _focusTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_focusLeft <= 1) {
+        t.cancel();
+        setState(() {
+          _focusOn = false;
+          _focusLeft = 25 * 60;
+        });
+        _haptic();
+        _showFocusDone();
+      } else {
+        setState(() => _focusLeft = _focusLeft - 1);
+      }
+    });
+  }
+
+  void _pauseFocus() {
+    _focusTimer?.cancel();
+    setState(() => _focusOn = false);
+  }
+
+  void _resetFocus() {
+    _focusTimer?.cancel();
+    setState(() {
+      _focusOn = false;
+      _focusLeft = 25 * 60;
+    });
+  }
+
+  String _fmtFocus() =>
+      '${(_focusLeft ~/ 60).toString().padLeft(2, '0')}:${(_focusLeft % 60).toString().padLeft(2, '0')}';
 
   Future<void> _newHabit() async {
     final name = TextEditingController();
@@ -693,7 +804,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: green,
-                foregroundColor: const Color(0xFF0B0F14),
+                foregroundColor: const Color(0xFF07090D),
               ),
               onPressed: () async {
                 final n = name.text.trim();
@@ -833,7 +944,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           label,
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: _dark ? const Color(0xFF0B0F14) : Colors.white,
+            color: _dark ? const Color(0xFF07090D) : Colors.white,
             fontWeight: FontWeight.w800,
             fontSize: 16,
             letterSpacing: 1,
@@ -848,8 +959,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     final cnt = _count(h);
     final done = _done(h);
     final fail = _failed(h);
-    final border = fail ? red : (done ? c : line);
-
+    final edge = fail ? red : (done ? c : line);
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
       duration: Duration(milliseconds: 300 + i * 80),
@@ -862,11 +972,11 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         onLongPress: () => _editHabit(h),
         child: Container(
           margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: card,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: border, width: (done || fail) ? 2 : 1),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: edge, width: (done || fail) ? 2 : 1),
             boxShadow: _dark && (done || fail)
                 ? [
                     BoxShadow(
@@ -879,19 +989,36 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           child: Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(12),
+                width: 5,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: fail ? red : c,
+                  borderRadius: BorderRadius.circular(4),
+                  boxShadow: _dark
+                      ? [
+                          BoxShadow(
+                            color: (fail ? red : c).withAlpha(120),
+                            blurRadius: 8,
+                          ),
+                        ]
+                      : [],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: c.withAlpha(40),
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
                   _icon(h.icon),
                   color: c,
-                  size: 26,
-                  shadows: _dark ? [Shadow(color: c, blurRadius: 12)] : [],
+                  size: 22,
+                  shadows: _dark ? [Shadow(color: c, blurRadius: 10)] : [],
                 ),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -902,7 +1029,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           child: Text(
                             h.name,
                             style: TextStyle(
-                              fontSize: 17,
+                              fontSize: 16,
                               fontWeight: FontWeight.w800,
                               color: ink,
                             ),
@@ -921,7 +1048,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                             child: Text(
                               h.alarm!,
                               style: TextStyle(
-                                color: amber,
+                                color: amberDark,
                                 fontSize: 11,
                                 fontWeight: FontWeight.w800,
                               ),
@@ -929,23 +1056,13 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
-                      child: LinearProgressIndicator(
-                        value: (cnt / h.target).clamp(0.0, 1.0),
-                        minHeight: 8,
-                        backgroundColor: line,
-                        valueColor: AlwaysStoppedAnimation(fail ? red : c),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 6),
                     Text(
                       fail
-                          ? 'FALLIDO HOY · aun puedes remediarlo'
-                          : '$cnt / ${h.target}',
+                          ? 'FALLIDO · aun puedes remediarlo'
+                          : (done ? 'CUMPLIDO HOY' : '$cnt / ${h.target}'),
                       style: TextStyle(
-                        color: fail ? red : sub,
+                        color: fail ? red : (done ? c : sub),
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
@@ -953,16 +1070,16 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   ],
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               GestureDetector(
                 onTap: () => _increment(h),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
-                  width: 52,
-                  height: 52,
+                  width: 46,
+                  height: 46,
                   decoration: BoxDecoration(
                     color: fail ? red : (done ? c : bg),
-                    shape: BoxShape.circle,
+                    borderRadius: BorderRadius.circular(14),
                     border: Border.all(
                       color: fail ? red : (done ? c : line),
                       width: 2,
@@ -971,8 +1088,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                         ? [
                             BoxShadow(
                               color: (fail ? red : c).withAlpha(90),
-                              blurRadius: 14,
-                              offset: const Offset(0, 4),
+                              blurRadius: 12,
+                              offset: const Offset(0, 3),
                             ),
                           ]
                         : [],
@@ -982,9 +1099,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                         ? Icons.close_rounded
                         : (done ? Icons.check_rounded : Icons.add_rounded),
                     color: (done || fail)
-                        ? (_dark ? const Color(0xFF0B0F14) : Colors.white)
+                        ? (_dark ? const Color(0xFF07090D) : Colors.white)
                         : sub,
-                    size: 26,
+                    size: 22,
                   ),
                 ),
               ),
@@ -1000,9 +1117,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       animation: _flame,
       builder: (c, ch) {
         final f = _flame.value;
-        final s = 0.92 + 0.12 * f;
         return Transform.scale(
-          scale: s,
+          scale: 0.92 + 0.12 * f,
           child: Icon(
             Icons.local_fire_department_rounded,
             color: amber,
@@ -1102,14 +1218,106 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: line),
             boxShadow: _dark
-                ? [BoxShadow(color: green.withAlpha(30), blurRadius: 20)]
+                ? [BoxShadow(color: green.withAlpha(25), blurRadius: 18)]
                 : [],
           ),
           child: Row(
             children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'BLOQUE FOCO',
+                      style: TextStyle(
+                        color: sub,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _fmtFocus(),
+                      style: TextStyle(
+                        fontSize: 38,
+                        fontWeight: FontWeight.w900,
+                        color: _focusOn ? green : ink,
+                        shadows: _dark && _focusOn
+                            ? [Shadow(color: green, blurRadius: 18)]
+                            : [],
+                      ),
+                    ),
+                    Text(
+                      _focusOn
+                          ? 'en curso — no toques nada'
+                          : '25 min de trabajo profundo',
+                      style: TextStyle(
+                        color: sub,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Column(
+                children: [
+                  GestureDetector(
+                    onTap: _focusOn ? _pauseFocus : _startFocus,
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: green,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0xFF15803D),
+                            offset: Offset(0, 3),
+                            blurRadius: 0,
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        _focusOn
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                        color: _dark ? const Color(0xFF07090D) : Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: _resetFocus,
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: bg,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: line),
+                      ),
+                      child: Icon(Icons.refresh_rounded, color: sub, size: 22),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: card,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: line),
+          ),
+          child: Row(
+            children: [
               SizedBox(
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 60,
                 child: Stack(
                   alignment: Alignment.center,
                   children: [
@@ -1131,7 +1339,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontWeight: FontWeight.w900,
                         color: ink,
-                        fontSize: 14,
+                        fontSize: 13,
                         shadows: _dark
                             ? [Shadow(color: cyan, blurRadius: 10)]
                             : [],
@@ -1158,7 +1366,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     Text(
                       '$doneCount de ${habits.length} habitos',
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 17,
                         fontWeight: FontWeight.w800,
                         color: ink,
                       ),
@@ -1372,7 +1580,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
       children: [
         Text(
-          'AJUSTES',
+          'SISTEMA',
           style: TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w900,
@@ -1381,7 +1589,19 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           ),
         ),
         const SizedBox(height: 16),
-        _bigButton('PERMITIR NOTIFICACIONES', green, greenDark, _perms),
+        _bigButton(
+          'PERMITIR NOTIFICACIONES + BATERIA',
+          green,
+          greenDark,
+          _perms,
+        ),
+        const SizedBox(height: 12),
+        _bigButton(
+          'ABRIR AJUSTES XOS DE ARK',
+          cyan,
+          cyanDark,
+          _openAppSettings,
+        ),
         const SizedBox(height: 12),
         _bigButton('PROBAR ALARMA DEL PRIMER HABITO', amber, amberDark, () {
           if (habits.isNotEmpty) _fireNow(habits.first);
@@ -1402,7 +1622,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   Icon(Icons.phone_android_rounded, color: green),
                   const SizedBox(width: 8),
                   Text(
-                    'PARA QUE SUENE EN TU INFINIX',
+                    'LOS 4 PASOS QUE NINGUN CODIGO REEMPLAZA',
                     style: TextStyle(
                       fontWeight: FontWeight.w900,
                       color: ink,
@@ -1413,10 +1633,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 12),
               ...[
-                '1. Ajustes > Aplicaciones > ARK > Inicio automatico: PERMITIR',
-                '2. Ajustes > Bateria > ARK: Sin restriccion / segundo plano',
-                '3. Ajustes > Notificaciones > ARK: todo + pantalla de bloqueo',
-                '4. Recientes: candado sobre ARK',
+                '1. Inicio automatico: PERMITIR',
+                '2. Bateria: sin restriccion / segundo plano',
+                '3. Notificaciones: todo + pantalla de bloqueo',
+                '4. Recientes: candado cerrado sobre ARK',
               ].map(
                 (t) => Padding(
                   padding: const EdgeInsets.only(bottom: 8),
@@ -1454,12 +1674,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'ARK v2',
+                'ARK v4',
                 style: TextStyle(fontWeight: FontWeight.w900, color: ink),
               ),
               const SizedBox(height: 4),
               Text(
-                'Tema oscuro neon + claro. Overlay CUMPLIDO/FALLIDO. Web-safe para pruebas.',
+                'Icono vacio que se llena con tu color al cumplir, o rojo al fallar.',
                 style: TextStyle(
                   color: sub,
                   fontSize: 12,
@@ -1476,12 +1696,22 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Widget _overlay() {
     final h = _active!;
     final c = Color(h.color);
+    final fill = _result == 'done'
+        ? c
+        : (_result == 'fail' ? red : Colors.transparent);
+    final border = _result == 'done'
+        ? c
+        : (_result == 'fail' ? red : c.withAlpha(140));
+    final iconCol = _result == ''
+        ? sub
+        : (_dark ? const Color(0xFF07090D) : Colors.white);
     return Material(
       color: Colors.transparent,
       child: AnimatedBuilder(
-        animation: _ovl,
+        animation: Listenable.merge([_ovl, _flame]),
         builder: (ctx, ch) {
           final t = Curves.easeOutBack.transform(_ovl.value.clamp(0.0, 1.0));
+          final pulse = _flame.value;
           return Container(
             color: bg,
             child: SafeArea(
@@ -1515,32 +1745,52 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   const Spacer(),
                   Transform.scale(
                     scale: 0.6 + 0.4 * t,
-                    child: Container(
-                      padding: const EdgeInsets.all(30),
-                      decoration: BoxDecoration(
-                        color: c.withAlpha(40),
-                        shape: BoxShape.circle,
-                        boxShadow: _dark
-                            ? [
-                                BoxShadow(
-                                  color: c.withAlpha(120),
-                                  blurRadius: 50,
-                                ),
-                              ]
-                            : [],
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.all(26),
-                        decoration: BoxDecoration(
-                          color: c,
-                          shape: BoxShape.circle,
+                    child: Column(
+                      children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 350),
+                          curve: Curves.easeOut,
+                          padding: const EdgeInsets.all(26),
+                          decoration: BoxDecoration(
+                            color: fill,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: border, width: 3),
+                            boxShadow: _result != '' && _dark
+                                ? [
+                                    BoxShadow(
+                                      color: (_result == 'done' ? c : red)
+                                          .withAlpha(120),
+                                      blurRadius: 40,
+                                    ),
+                                  ]
+                                : (_dark
+                                      ? [
+                                          BoxShadow(
+                                            color: c.withAlpha(
+                                              40 + (40 * pulse).round(),
+                                            ),
+                                            blurRadius: 30,
+                                          ),
+                                        ]
+                                      : []),
+                          ),
+                          child: Icon(_icon(h.icon), color: iconCol, size: 56),
                         ),
-                        child: Icon(
-                          _icon(h.icon),
-                          color: _dark ? const Color(0xFF0B0F14) : Colors.white,
-                          size: 60,
+                        const SizedBox(height: 14),
+                        Text(
+                          _result == ''
+                              ? 'ELIGE TU VEREDICTO'
+                              : (_result == 'done' ? 'CUMPLIDO' : 'FALLIDO'),
+                          style: TextStyle(
+                            color: _result == ''
+                                ? sub
+                                : (_result == 'done' ? c : red),
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 2,
+                            fontSize: 13,
+                          ),
                         ),
-                      ),
+                      ],
                     ),
                   ),
                   const Spacer(),
@@ -1552,14 +1802,14 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           'CUMPLIDO',
                           green,
                           greenDark,
-                          () => _closeOverlay(true),
+                          () => _answer(true),
                         ),
                         const SizedBox(height: 14),
                         _bigButton(
                           'FALLIDO',
                           red,
                           redDark,
-                          () => _closeOverlay(false),
+                          () => _answer(false),
                         ),
                       ],
                     ),
@@ -1609,7 +1859,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             children: [
               _navBtn(0, Icons.home_rounded, 'HOY'),
               _navBtn(1, Icons.bar_chart_rounded, 'PROGRESO'),
-              _navBtn(2, Icons.settings_rounded, 'AJUSTES'),
+              _navBtn(2, Icons.settings_rounded, 'SISTEMA'),
             ],
           ),
         ),
